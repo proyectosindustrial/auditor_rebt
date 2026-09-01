@@ -215,11 +215,11 @@ with tab1:
             - Observaciones: {observaciones}
             """
             
-            with st.spinner("Procesando auditoría (reintentando en caso de saturación)..."):
+            with st.spinner("Procesando auditoría..."):
                 client = genai.Client(api_key=api_key)
                 
+                # Prioriza el modelo principal de alto rendimiento y usa respaldo si falla
                 modelos_candidatos = [
-                    "gemini-3.6-flash",
                     "gemini-2.5-flash",
                     "gemini-1.5-flash"
                 ]
@@ -249,7 +249,7 @@ with tab1:
                         except Exception as e:
                             ultimo_error = str(e)
                             if "503" in ultimo_error or "UNAVAILABLE" in ultimo_error:
-                                time.sleep(2 ** intento)
+                                time.sleep(1.5 ** intento)
                                 continue
                             break
                     if informe:
