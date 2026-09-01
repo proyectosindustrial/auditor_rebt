@@ -218,8 +218,8 @@ with tab1:
             with st.spinner("Procesando auditoría..."):
                 client = genai.Client(api_key=api_key)
                 
-                # Modelo estándar activo en Google AI Studio
-                modelo_objetivo = "gemini-2.5-flash"
+                # Modelo activo exigido por Google API en 2026
+                modelo_objetivo = "gemini-3.6-flash"
                 
                 informe = None
                 raw_json = ""
