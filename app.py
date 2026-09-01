@@ -218,7 +218,10 @@ with tab1:
             with st.spinner("Procesando auditoría de forma inmediata..."):
                 client = genai.Client(api_key=api_key)
                 
-                modelos_candidatos = ["gemini-2.5-flash", "gemini-1.5-flash"]
+                modelos_candidatos = [
+                    "gemini-2.5-flash",
+                    "gemini-2.0-flash"
+                ]
                 
                 informe = None
                 raw_json = ""
