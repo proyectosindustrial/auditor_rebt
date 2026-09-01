@@ -16,6 +16,7 @@ from calculos import (
     calcular_intensidad_empleo, 
     calcular_caida_tension, 
     calcular_iz_corregida,
+    calcular_seccion_pe_minima,
     recomendar_seccion_correctora
 )
 from database import init_db, guardar_auditoria, obtener_historial, obtener_auditoria_por_id
@@ -34,85 +35,88 @@ class EstadoCumplimiento(str, Enum):
     REQUIERE_ACLARACION = "REQUIERE ACLARACIÓN"
 
 class HallazgoNormativo(BaseModel):
-    elemento_afectado: str = Field(description="Ej: Sección Cable, Magnetotérmico, Caída de Tensión")
+    elemento_afectado: str = Field(description="Ej: Sección Cable, Magnetotérmico, Caída de Tensión, PE/Neutro")
     articulo_itc_aplicable: str = Field(description="Ej: ITC-BT-19, ITC-BT-22, Art. 18")
     estado: EstadoCumplimiento
-    dato_provocador: str = Field(description="El dato que origina el hallazgo, ej: Ib = 45A > Iz = 32A")
+    dato_provocador: str = Field(description="El dato que origina el hallazgo")
     requisito_normativo: str = Field(description="Lo que exige la norma exactamente")
     justificacion_tecnica: str = Field(description="Explicación detallada del cálculo o incoherencia")
 
 class InformeAuditoria(BaseModel):
     resumen_ejecutivo: str = Field(description="Resumen de 2-3 frases del estado general de la instalación")
     hallazgos: list[HallazgoNormativo]
-    datos_faltantes_criticos: list[str] = Field(description="Lista de datos no proporcionados que son imprescindibles para validar completamente la instalación")
+    datos_faltantes_criticos: list[str] = Field(description="Lista de datos no proporcionados imprescindibles")
 
 SYSTEM_INSTRUCTION = """
-Eres un Ingeniero Inspector Industrial de Alta Calificación, especialista en el Reglamento Electrotécnico para Baja Tensión (REBT - Real Decreto 842/2002) de España y sus Instrucciones Técnicas Complementarias (ITCs).
+Eres un Ingeniero Inspector Industrial de Alta Calificación, especialista en el REBT (Real Decreto 842/2002) de España e ITCs.
 
-Tu objetivo es auditar los datos de la instalación eléctrica proporcionados y generar un informe técnico estructurado e inflexible respecto al cumplimiento normativo.
+Tu objetivo es auditar los datos proporcionados y generar un informe técnico estructurado e inflexible.
 
-IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados con factores de corrección por temperatura y agrupamiento. UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
+IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados con factores de corrección por temperatura, agrupamiento y material. UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
 
 Reglas estrictas de auditoría:
-1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica estrictamente la condición de protección frente a sobrecargas: Ib <= In <= Iz.
-2. Caída de Tensión (ITC-BT-19): Verifica que dU% no supere los límites normativos (4% para distribución interior general, 3% para alumbrado, 5% para otros usos/fuerza salvo especificación).
-3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En esquema TT, verifica Ra * IΔn <= 50V (o 24V en locales húmedos/obras).
-4. Sección del Conductor Neutro y Protección (ITC-BT-19): Verifica si la sección del neutro cumple con los mínimos requeridos según la sección de los conductores de fase.
-5. Inflexibilidad Técnica: Si un dato imprescindible falta (ej: no se da la Ra de tierra), márcalo como REQUIERE ACLARACIÓN y añádelo a 'datos_faltantes_criticos'.
+1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Ib <= In <= Iz.
+2. Caída de Tensión (ITC-BT-19): Verificar límites (3% alumbrado, 5% otros).
+3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En TT, Ra * IΔn <= 50V (o 24V locales húmedos/obras).
+4. Sección del Conductor PE y Neutro (ITC-BT-18 / ITC-BT-19): Verificar Spe >= Sfase si Sfase <= 16mm² y Spe >= Sfase/2 si Sfase > 16mm².
+5. Inflexibilidad Técnica: Si falta un dato crítico, marcar REQUIERE ACLARACIÓN.
 
 Responde EXCLUSIVAMENTE en el formato JSON estructurado requerido.
 """
 
-def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: float, in_pia: float, r_tierra: float, sens_diff_ma: float, seccion_mm2: float, sec_rec: float) -> InformeAuditoria:
+def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: float, in_pia: float, r_tierra: float, sens_diff_ma: float, seccion_mm2: float, seccion_pe: float, seccion_n: float, sec_rec: float, material: str) -> InformeAuditoria:
     hallazgos = []
     faltantes = []
 
+    # 1. Capacidad térmica del conductor
     if ib <= iz:
         hallazgos.append(HallazgoNormativo(
-            elemento_afectado="Sección de Conductor (Capacidad Térmica Corregida)",
+            elemento_afectado=f"Sección de Conductor Fase ({material})",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.CUMPLE,
             dato_provocador=f"Ib = {ib} A <= Iz corregida = {iz} A",
             requisito_normativo="La intensidad admisible corregida (Iz) debe ser superior o igual a la intensidad de empleo (Ib).",
-            justificacion_tecnica="El conductor soportará la carga aplicando coeficientes de agrupamiento y temperatura sin degradarse."
+            justificacion_tecnica="El conductor seleccionado soportará la carga aplicando coeficientes de agrupamiento, temperatura y material."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
-            elemento_afectado="Sección de Conductor (Capacidad Térmica Corregida)",
+            elemento_afectado=f"Sección de Conductor Fase ({material})",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.NO_CUMPLE,
             dato_provocador=f"Ib = {ib} A > Iz corregida = {iz} A",
-            requisito_normativo="La corriente admisible corregida del cable (Iz) debe ser estrictamente mayor o igual que la corriente de servicio (Ib).",
-            justificacion_tecnica=f"Sobrecarga térmica por coeficientes de corrección. Se requiere aumentar la sección a mínimo {sec_rec} mm² Cu."
+            requisito_normativo="La corriente admisible corregida del cable (Iz) debe ser mayor o igual que la corriente de servicio (Ib).",
+            justificacion_tecnica=f"Riesgo térmico grave. Aumentar sección a mínimo {sec_rec} mm²."
         ))
 
+    # 2. Coordinación de protección frente a sobrecargas
     if ib <= in_pia <= iz:
         hallazgos.append(HallazgoNormativo(
             elemento_afectado="Coordinación de Magnetotérmico (Ib <= In <= Iz)",
             articulo_itc_aplicable="ITC-BT-22 / ITC-BT-19",
             estado=EstadoCumplimiento.CUMPLE,
             dato_provocador=f"Ib ({ib} A) <= In ({in_pia} A) <= Iz ({iz} A)",
-            requisito_normativo="In debe ser mayor o igual a Ib para evitar disparos intempestivos y menor o igual a Iz para proteger el cable.",
-            justificacion_tecnica="El calibre nominal del PIA garantiza la protección frente a sobrecargas sin disparos en régimen normal."
+            requisito_normativo="In debe cumplir estrictamente Ib <= In <= Iz.",
+            justificacion_tecnica="El calibre nominal del PIA garantiza la protección sin disparos intempestivos."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
             elemento_afectado="Coordinación de Magnetotérmico (Ib <= In <= Iz)",
             articulo_itc_aplicable="ITC-BT-22 / ITC-BT-19",
             estado=EstadoCumplimiento.NO_CUMPLE,
-            dato_provocador=f"In = {in_pia} A fuera del rango Ib = {ib} A / Iz = {iz} A",
-            requisito_normativo="In debe cumplir estrictamente la condición de coordinación Ib <= In <= Iz.",
-            justificacion_tecnica="Si In > Iz el cable no está protegido contra sobrecargas. Si In < Ib la protección disparará durante el funcionamiento ordinario."
+            dato_provocador=f"In = {in_pia} A fuera de rango Ib = {ib} A / Iz = {iz} A",
+            requisito_normativo="In debe cumplir estrictamente Ib <= In <= Iz.",
+            justificacion_tecnica="Si In > Iz el cable no está protegido contra sobrecargas. Si In < Ib la protección disparará en servicio regular."
         ))
 
+    # 3. Caída de Tensión
     if dv_pct <= limite_du:
         hallazgos.append(HallazgoNormativo(
             elemento_afectado="Caída de Tensión (dU%)",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.CUMPLE,
             dato_provocador=f"dU = {dv_pct}% <= {limite_du}%",
-            requisito_normativo=f"La caída de tensión no debe superar el {limite_du}% para esta tipología de circuito.",
-            justificacion_tecnica="El voltaje en bornes del receptor se mantiene dentro de los márgenes admisibles de funcionamiento."
+            requisito_normativo=f"La caída de tensión no debe superar el {limite_du}%.",
+            justificacion_tecnica="El voltaje en el receptor se mantiene dentro de los márgenes admisibles."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
@@ -120,10 +124,32 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.NO_CUMPLE,
             dato_provocador=f"dU = {dv_pct}% > {limite_du}%",
-            requisito_normativo=f"La caída de tensión no debe superar el límite normativo fijado en el {limite_du}%.",
-            justificacion_tecnica=f"Exceso de caída de tensión. Redimensionar a {sec_rec} mm²."
+            requisito_normativo=f"La caída de tensión no debe superar el {limite_du}%.",
+            justificacion_tecnica=f"Exceso de caída de tensión. Redimensionar a mínimo {sec_rec} mm²."
         ))
 
+    # 4. Dimensionamiento de PE y Neutro
+    pe_min = calcular_seccion_pe_minima(seccion_mm2)
+    if seccion_pe >= pe_min:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Sección Conductor Proteccion (PE)",
+            articulo_itc_aplicable="ITC-BT-18 / Tabla 2",
+            estado=EstadoCumplimiento.CUMPLE,
+            dato_provocador=f"SPE = {seccion_pe} mm² >= SPE_mín = {pe_min} mm²",
+            requisito_normativo=f"Para Sfase = {seccion_mm2} mm², SPE debe ser de al menos {pe_min} mm².",
+            justificacion_tecnica="El conductor de protección garantiza la evacuación de corrientes de defecto sin sobrecalentamiento."
+        ))
+    else:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Sección Conductor Proteccion (PE)",
+            articulo_itc_aplicable="ITC-BT-18 / Tabla 2",
+            estado=EstadoCumplimiento.NO_CUMPLE,
+            dato_provocador=f"SPE = {seccion_pe} mm² < SPE_mín = {pe_min} mm²",
+            requisito_normativo=f"Para Sfase = {seccion_mm2} mm², SPE debe ser de al menos {pe_min} mm².",
+            justificacion_tecnica="Sección de protección insuficiente según la norma. Aumentar el conductor de tierra a mínimo la sección requerida."
+        ))
+
+    # 5. Protección contra contactos indirectos (Esquema TT)
     if r_tierra > 0:
         v_contacto = r_tierra * (sens_diff_ma / 1000.0)
         if v_contacto <= 50.0:
@@ -132,8 +158,8 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
                 articulo_itc_aplicable="ITC-BT-18 / ITC-BT-24",
                 estado=EstadoCumplimiento.CUMPLE,
                 dato_provocador=f"Ra * IΔn = {r_tierra} Ω * {sens_diff_ma} mA = {round(v_contacto, 2)} V <= 50 V",
-                requisito_normativo="La tensión de defecto esperada no debe superar 50 V en locales secos.",
-                justificacion_tecnica="La protección diferencial asegura la desconexión antes de alcanzar tensiones peligrosas."
+                requisito_normativo="La tensión de defecto no debe superar 50 V.",
+                justificacion_tecnica="El diferencial desconectará el circuito antes de alcanzar tensiones peligrosas."
             ))
         else:
             hallazgos.append(HallazgoNormativo(
@@ -142,7 +168,7 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
                 estado=EstadoCumplimiento.NO_CUMPLE,
                 dato_provocador=f"Ra * IΔn = {round(v_contacto, 2)} V > 50 V",
                 requisito_normativo="Tensión de contacto máxima admisible en instalaciones generales = 50 V.",
-                justificacion_tecnica="Resistencia de tierra excesivamente alta para la sensibilidad seleccionada."
+                justificacion_tecnica="Resistencia de tierra excesivamente alta para la sensibilidad del diferencial."
             ))
     else:
         faltantes.append("Resistencia de la toma de tierra (Ra) no especificada. Imposible validar contactos indirectos (ITC-BT-18).")
@@ -254,9 +280,11 @@ with tab1:
     st.subheader("3. Canalización y Conductor")
     col3, col4 = st.columns(2)
     with col3:
+        material_conductor = st.selectbox("Material del conductor", ["Cobre (Cu)", "Aluminio (Al)"])
         longitud_m = st.number_input("Longitud de la línea (m)", value=45.0, step=1.0)
-        seccion_mm2 = st.selectbox("Sección fase (mm² Cu)", [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240])
-        seccion_pe = st.selectbox("Sección de protección PE (mm² Cu)", [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240], index=4)
+        seccion_mm2 = st.selectbox("Sección fase (mm²)", [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240], index=3)
+        seccion_neutro = st.selectbox("Sección neutro (mm²)", [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240], index=3)
+        seccion_pe = st.selectbox("Sección de protección PE (mm²)", [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240], index=3)
 
     with col4:
         aislamiento = st.selectbox("Tipo de aislamiento", ["XLPE / EPR (90 °C)", "PVC (70 °C)"])
@@ -279,30 +307,31 @@ with tab1:
 
     if btn_evaluar:
         ib_calc = calcular_intensidad_empleo(potencia_kw, tension, cos_phi, rendimiento)
-        dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi)
-        iz_calc = calcular_iz_corregida(seccion_mm2, metodo_inst, temp_ambiente, aislamiento, num_circuitos)
+        dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi, material_conductor)
+        iz_calc = calcular_iz_corregida(seccion_mm2, metodo_inst, temp_ambiente, aislamiento, num_circuitos, material_conductor)
         limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
 
-        st.info(f"**Valores deterministas corregidos:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z (corregida) = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
+        st.info(f"**Valores deterministas corregidos ({material_conductor}):** $I_b = {ib_calc}\\text{{ A}}$ | $I_z (corregida) = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
 
         sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
-            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, temp_ambiente, aislamiento, num_circuitos, limite_pct=limite_du_norma
+            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, temp_ambiente, aislamiento, num_circuitos, material_conductor, limite_pct=limite_du_norma
         )
 
         if ib_calc > iz_calc or dv_pct > limite_du_norma:
             if sec_rec:
                 st.warning(
                     f"💡 **Recomendación Correctora Directa (Cálculo Determinista):**\n\n"
-                    f"La sección introducida ({seccion_mm2} mm²) no es apta bajo los factores de corrección. Aumenta la sección del conductor a **{sec_rec} mm² Cu**.\n"
+                    f"La sección introducida ({seccion_mm2} mm² {material_conductor}) no es apta. Aumenta la sección a **{sec_rec} mm²**.\n"
                     f"- Nueva Intensidad Admisible Corregida ($I_z$): **{iz_rec} A** (suficiente para $I_b = {ib_calc} A$)\n"
                     f"- Nueva Caída de Tensión ($\\Delta U$): **{dv_rec}%** (cumple límite de {limite_du_norma}%)"
                 )
 
         datos_consolidados = f"""
         --- CÁLCULOS FÍSICOS DETERMINISTAS (CON FACTORES DE CORRECCIÓN) ---
+        * Material Conductor: {material_conductor}
         * Intensidad de empleo calculada (Ib): {ib_calc} A
         * Caída de tensión calculada (dU): {dv_v} V ({dv_pct} %)
-        * Intensidad admisible corregida del conductor (Iz con f1={temp_ambiente}°C y f2={num_circuitos} circ): {iz_calc} A
+        * Intensidad admisible corregida (Iz con f1={temp_ambiente}°C y f2={num_circuitos} circ): {iz_calc} A
 
         --- DATOS DE ENTRADA DE LA INSTALACIÓN ---
         - Nombre: {nombre_inst}
@@ -310,7 +339,7 @@ with tab1:
         - Red: {tension}, Esquema: {esquema_tierra}, Ra tierra: {r_tierra if r_tierra > 0 else 'NO ESPECIFICADO'}
         - Receptor: {tipo_receptor}, Potencia: {potencia_kw} kW, cos φ: {cos_phi}, rendimiento: {rendimiento}
         - Arranque: {tipo_arranque}
-        - Línea: Longitud: {longitud_m} m, Sección: {seccion_mm2} mm² Cu, PE: {seccion_pe if seccion_pe > 0 else 'NO ESPECIFICADO'}
+        - Línea: Longitud: {longitud_m} m, Material: {material_conductor}, Sección Fase: {seccion_mm2} mm², Neutro: {seccion_neutro} mm², PE: {seccion_pe} mm²
         - Cable/Canalización: Aislamiento {aislamiento}, Método {metodo_inst}, Agrupamiento: {num_circuitos} circuitos
         - Magnetotérmico: In={in_pia}A, Curva {curva_pia}
         - Diferencial: In={in_diff}A, Sensibilidad={sens_diff_ma} mA
@@ -345,7 +374,7 @@ with tab1:
 
         if not informe:
             st.info("ℹ️ **Modo de Auditoría Local Activo:** Generando informe regulatorio completo mediante reglas de ingeniería en Python.")
-            informe = generar_auditoria_local(ib_calc, iz_calc, dv_pct, limite_du_norma, in_pia, r_tierra, sens_diff_ma, seccion_mm2, sec_rec)
+            informe = generar_auditoria_local(ib_calc, iz_calc, dv_pct, limite_du_norma, in_pia, r_tierra, sens_diff_ma, seccion_mm2, seccion_pe, seccion_neutro, sec_rec, material_conductor)
             raw_json = informe.model_dump_json()
 
         auditoria_id = guardar_auditoria(nombre_inst, datos_consolidados, raw_json)
