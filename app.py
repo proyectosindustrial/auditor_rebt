@@ -196,13 +196,31 @@ with tab1:
     btn_evaluar = st.button("🚀 Ejecutar Auditoría Estructurada", type="primary")
 
     if btn_evaluar:
-        if not api_key:
-            st.error("Introduce tu Gemini API Key en el menú lateral.")
-        else:
-            ib_calc = calcular_intensidad_empleo(potencia_kw, tension, cos_phi, rendimiento)
-            dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi)
-            iz_calc = obtener_iz_tabulada(seccion_mm2, metodo_inst)
+        # 1. Cálculos Físicos Deterministas (Locales)
+        ib_calc = calcular_intensidad_empleo(potencia_kw, tension, cos_phi, rendimiento)
+        dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi)
+        iz_calc = obtener_iz_tabulada(seccion_mm2, metodo_inst)
+        limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
 
+        # Mostrar métricas físicas deterministas siempre
+        st.info(f"**Valores deterministas de línea:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
+
+        # Evaluar recomendación de recálculo directa por Python
+        if ib_calc > iz_calc or dv_pct > limite_du_norma:
+            sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
+                potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, limite_pct=limite_du_norma
+            )
+            if sec_rec:
+                st.warning(
+                    f"💡 **Recomendación Correctora Directa (Cálculo Determinista):**\n\n"
+                    f"La sección introducida ({seccion_mm2} mm²) no es apta. Aumenta la sección del conductor a **{sec_rec} mm² Cu**.\n"
+                    f"- Nueva Intensidad Admisible ($I_z$): **{iz_rec} A** (suficiente para $I_b = {ib_calc} A$)\n"
+                    f"- Nueva Caída de Tensión ($\\Delta U$): **{dv_rec}%** (cumple límite de {limite_du_norma}%)"
+                )
+
+        if not api_key:
+            st.error("Introduce tu Gemini API Key en el menú lateral para ejecutar el análisis regulatorio con IA.")
+        else:
             datos_consolidados = f"""
             --- CÁLCULOS FÍSICOS DETERMINISTAS EJECUTADOS POR EL MOTOR EN PYTHON ---
             * Intensidad de empleo calculada (Ib): {ib_calc} A
@@ -222,9 +240,8 @@ with tab1:
             - Observaciones: {observaciones}
             """
             
-            with st.spinner("Procesando auditoría..."):
+            with st.spinner("Procesando auditoría con IA..."):
                 client = genai.Client(api_key=api_key)
-                
                 modelo_objetivo = "gemini-3.6-flash"
                 
                 informe = None
@@ -249,7 +266,7 @@ with tab1:
                     except Exception as e:
                         ultimo_error = str(e)
                         if "429" in ultimo_error:
-                            time.sleep(10)
+                            time.sleep(2)
                             continue
                         if "503" in ultimo_error or "UNAVAILABLE" in ultimo_error:
                             time.sleep(2 ** intento)
@@ -257,26 +274,10 @@ with tab1:
                         break
 
                 if informe:
-                    st.success("Auditoría completada exitosamente.")
+                    st.success("Auditoría normatividad completada exitosamente.")
                     
                     auditoria_id = guardar_auditoria(nombre_inst, datos_consolidados, raw_json)
                     st.toast(f"Guardado en base de datos con ID #{auditoria_id}")
-
-                    st.info(f"**Valores deterministas de línea:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
-
-                    # RECOMENDACIÓN AUTOMÁTICA DE SECCIÓN CORRECTORA EN STREAMLIT
-                    limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
-                    if ib_calc > iz_calc or dv_pct > limite_du_norma:
-                        sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
-                            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, limite_pct=limite_du_norma
-                        )
-                        if sec_rec:
-                            st.warning(
-                                f"💡 **Recomendación Correctora Directa (Cálculo Determinista):**\n\n"
-                                f"La sección introducida ({seccion_mm2} mm²) no es apta. Aumenta la sección del conductor a **{sec_rec} mm² Cu**.\n"
-                                f"- Nueva Intensidad Admisible ($I_z$): **{iz_rec} A** (suficiente para $I_b = {ib_calc} A$)\n"
-                                f"- Nueva Caída de Tensión ($\\Delta U$): **{dv_rec}%** (cumple límite de {limite_du_norma}%)"
-                            )
 
                     st.subheader("Resumen Ejecutivo")
                     st.info(informe.resumen_ejecutivo)
@@ -303,7 +304,7 @@ with tab1:
                         type="secondary"
                     )
                 else:
-                    st.error(f"Error al conectar con la API: {ultimo_error}")
+                    st.error(f"⚠️ **Atención:** La API de Google devolvió un error de cuota/conexión ({ultimo_error[:100]}...). Se muestran arriba las recomendaciones matemáticas locales.")
 
 with tab2:
     st.header("Historial de Inspecciones Guardadas")
