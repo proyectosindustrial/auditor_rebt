@@ -47,8 +47,8 @@ Tu objetivo es auditar los datos de la instalación eléctrica proporcionados y 
 
 IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados (Intensidad de empleo Ib, Caída de tensión dU%, e Intensidad Admisible Iz). UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
 
-Reglas estrictas de auditoría:
-1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica strictly la condición de protección frente a sobrecargas: Ib <= In <= Iz.
+Reglas strictly de auditoría:
+1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica estrictamente la condición de protección frente a sobrecargas: Ib <= In <= Iz.
 2. Caída de Tensión (ITC-BT-19): Verifica que dU% no supere los límites normativos (4% para distribución interior general, 3% para alumbrado, 5% para otros usos/fuerza salvo especificación).
 3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En esquema TT, verifica Ra * IΔn <= 50V (o 24V en locales húmedos/obras).
 4. Sección del Conductor Neutro y Protección (ITC-BT-19): Verifica si la sección del neutro cumple con los mínimos requeridos según la sección de los conductores de fase.
@@ -218,35 +218,33 @@ with tab1:
             with st.spinner("Analizando normas UNE y articulado del REBT..."):
                 client = genai.Client(api_key=api_key)
                 
-                # Lista de modelos de respaldo para mitigar la saturación puntual (Error 503)
-                modelos_a_probar = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
+                MODELO_OFICIAL = "gemini-3.6-flash"
                 respuesta_correcta = False
                 informe = None
                 raw_json = ""
                 ultimo_error = ""
 
-                for modelo in modelos_a_probar:
-                    if respuesta_correcta:
+                for intento in range(5):
+                    try:
+                        response = client.models.generate_content(
+                            model=MODELO_OFICIAL,
+                            contents=f"Audita la siguiente instalación:\n{datos_consolidados}",
+                            config=types.GenerateContentConfig(
+                                system_instruction=SYSTEM_INSTRUCTION,
+                                response_mime_type="application/json",
+                                response_schema=InformeAuditoria,
+                                temperature=0.1,
+                            ),
+                        )
+                        raw_json = response.text
+                        informe = InformeAuditoria.model_validate_json(raw_json)
+                        respuesta_correcta = True
                         break
-                    for intento in range(3):
-                        try:
-                            response = client.models.generate_content(
-                                model=modelo,
-                                contents=f"Audita la siguiente instalación:\n{datos_consolidados}",
-                                config=types.GenerateContentConfig(
-                                    system_instruction=SYSTEM_INSTRUCTION,
-                                    response_mime_type="application/json",
-                                    response_schema=InformeAuditoria,
-                                    temperature=0.1,
-                                ),
-                            )
-                            raw_json = response.text
-                            informe = InformeAuditoria.model_validate_json(raw_json)
-                            respuesta_correcta = True
-                            break
-                        except Exception as e:
-                            ultimo_error = str(e)
-                            time.sleep(2)
+                    except Exception as e:
+                        ultimo_error = str(e)
+                        tiempo_espera = 2 ** (intento + 1)
+                        st.warning(f"Saturación en la API (503). Reintentando en {tiempo_espera}s... (Intento {intento + 1}/5)")
+                        time.sleep(tiempo_espera)
                 
                 if respuesta_correcta and informe:
                     st.success("Auditoría completada exitosamente.")
@@ -282,7 +280,7 @@ with tab1:
                         type="secondary"
                     )
                 else:
-                    st.error(f"Error al conectar con la API tras varios reintentos: {ultimo_error}")
+                    st.error(f"Error persistente tras 5 reintentos: {ultimo_error}")
 
 with tab2:
     st.header("Historial de Inspecciones Guardadas")
