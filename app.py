@@ -215,11 +215,14 @@ with tab1:
             - Observaciones: {observaciones}
             """
             
-            with st.spinner("Procesando auditoría con el modelo activo..."):
+            with st.spinner("Procesando auditoría..."):
                 client = genai.Client(api_key=api_key)
                 
+                # Lista con modelo principal y respaldos por si hay sobrecarga 503
                 modelos_candidatos = [
-                    "gemini-3.6-flash"
+                    "gemini-3.6-flash",
+                    "gemini-2.5-flash",
+                    "gemini-1.5-flash"
                 ]
                 
                 informe = None
@@ -228,24 +231,30 @@ with tab1:
                 modelo_exitoso = ""
 
                 for mod in modelos_candidatos:
-                    try:
-                        response = client.models.generate_content(
-                            model=mod,
-                            contents=f"Audita la siguiente instalación:\n{datos_consolidados}",
-                            config=types.GenerateContentConfig(
-                                system_instruction=SYSTEM_INSTRUCTION,
-                                response_mime_type="application/json",
-                                response_schema=InformeAuditoria,
-                                temperature=0.1,
-                            ),
-                        )
-                        raw_json = response.text
-                        informe = InformeAuditoria.model_validate_json(raw_json)
-                        modelo_exitoso = mod
+                    for intento in range(2):  # Reintento rápido si el servidor responde 503
+                        try:
+                            response = client.models.generate_content(
+                                model=mod,
+                                contents=f"Audita la siguiente instalación:\n{datos_consolidados}",
+                                config=types.GenerateContentConfig(
+                                    system_instruction=SYSTEM_INSTRUCTION,
+                                    response_mime_type="application/json",
+                                    response_schema=InformeAuditoria,
+                                    temperature=0.1,
+                                ),
+                            )
+                            raw_json = response.text
+                            informe = InformeAuditoria.model_validate_json(raw_json)
+                            modelo_exitoso = mod
+                            break
+                        except Exception as e:
+                            ultimo_error = str(e)
+                            if "503" in ultimo_error or "UNAVAILABLE" in ultimo_error:
+                                time.sleep(1)  # Pequeña pausa antes de reintentar o saltar de modelo
+                                continue
+                            break
+                    if informe:
                         break
-                    except Exception as e:
-                        ultimo_error = str(e)
-                        continue
 
                 if informe:
                     st.success(f"Auditoría completada con `{modelo_exitoso}`.")
@@ -280,7 +289,7 @@ with tab1:
                         type="secondary"
                     )
                 else:
-                    st.error(f"Error de ejecución: {ultimo_error}")
+                    st.error(f"El servicio de la API está saturado momentáneamente. Por favor, reintenta en unos segundos. Detalle: {ultimo_error}")
 
 with tab2:
     st.header("Historial de Inspecciones Guardadas")
