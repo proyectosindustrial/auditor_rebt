@@ -1,3 +1,5 @@
+# app.py
+
 import streamlit as st
 import time
 from google import genai
@@ -10,7 +12,12 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-from calculos import calcular_intensidad_empleo, calcular_caida_tension, obtener_iz_tabulada
+from calculos import (
+    calcular_intensidad_empleo, 
+    calcular_caida_tension, 
+    obtener_iz_tabulada,
+    recomendar_seccion_correctora
+)
 from database import init_db, guardar_auditoria, obtener_historial, obtener_auditoria_por_id
 
 # Inicializar Base de Datos al arrancar
@@ -47,8 +54,8 @@ Tu objetivo es auditar los datos de la instalación eléctrica proporcionados y 
 
 IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados (Intensidad de empleo Ib, Caída de tensión dU%, e Intensidad Admisible Iz). UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
 
-Reglas strictly de auditoría:
-1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica strictly la condición de protección frente a sobrecargas: Ib <= In <= Iz.
+Reglas estrictas de auditoría:
+1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica estrictamente la condición de protección frente a sobrecargas: Ib <= In <= Iz.
 2. Caída de Tensión (ITC-BT-19): Verifica que dU% no supere los límites normativos (4% para distribución interior general, 3% para alumbrado, 5% para otros usos/fuerza salvo especificación).
 3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En esquema TT, verifica Ra * IΔn <= 50V (o 24V en locales húmedos/obras).
 4. Sección del Conductor Neutro y Protección (ITC-BT-19): Verifica si la sección del neutro cumple con los mínimos requeridos según la sección de los conductores de fase.
@@ -218,7 +225,6 @@ with tab1:
             with st.spinner("Procesando auditoría..."):
                 client = genai.Client(api_key=api_key)
                 
-                # Modelo activo exigido por Google API en 2026
                 modelo_objetivo = "gemini-3.6-flash"
                 
                 informe = None
@@ -242,6 +248,9 @@ with tab1:
                         break
                     except Exception as e:
                         ultimo_error = str(e)
+                        if "429" in ultimo_error:
+                            time.sleep(10)
+                            continue
                         if "503" in ultimo_error or "UNAVAILABLE" in ultimo_error:
                             time.sleep(2 ** intento)
                             continue
@@ -254,6 +263,20 @@ with tab1:
                     st.toast(f"Guardado en base de datos con ID #{auditoria_id}")
 
                     st.info(f"**Valores deterministas de línea:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
+
+                    # RECOMENDACIÓN AUTOMÁTICA DE SECCIÓN CORRECTORA EN STREAMLIT
+                    limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
+                    if ib_calc > iz_calc or dv_pct > limite_du_norma:
+                        sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
+                            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, limite_pct=limite_du_norma
+                        )
+                        if sec_rec:
+                            st.warning(
+                                f"💡 **Recomendación Correctora Directa (Cálculo Determinista):**\n\n"
+                                f"La sección introducida ({seccion_mm2} mm²) no es apta. Aumenta la sección del conductor a **{sec_rec} mm² Cu**.\n"
+                                f"- Nueva Intensidad Admisible ($I_z$): **{iz_rec} A** (suficiente para $I_b = {ib_calc} A$)\n"
+                                f"- Nueva Caída de Tensión ($\\Delta U$): **{dv_rec}%** (cumple límite de {limite_du_norma}%)"
+                            )
 
                     st.subheader("Resumen Ejecutivo")
                     st.info(informe.resumen_ejecutivo)
