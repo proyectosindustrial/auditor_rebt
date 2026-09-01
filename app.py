@@ -215,12 +215,11 @@ with tab1:
             - Observaciones: {observaciones}
             """
             
-            with st.spinner("Procesando auditoría de forma inmediata..."):
+            with st.spinner("Procesando auditoría con el modelo activo..."):
                 client = genai.Client(api_key=api_key)
                 
                 modelos_candidatos = [
-                    "gemini-2.5-flash",
-                    "gemini-2.0-flash"
+                    "gemini-3.6-flash"
                 ]
                 
                 informe = None
