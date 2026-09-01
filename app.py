@@ -215,10 +215,9 @@ with tab1:
             - Observaciones: {observaciones}
             """
             
-            with st.spinner("Procesando auditoría..."):
+            with st.spinner("Procesando auditoría (reintentando en caso de saturación)..."):
                 client = genai.Client(api_key=api_key)
                 
-                # Lista con modelo principal y respaldos por si hay sobrecarga 503
                 modelos_candidatos = [
                     "gemini-3.6-flash",
                     "gemini-2.5-flash",
@@ -231,7 +230,7 @@ with tab1:
                 modelo_exitoso = ""
 
                 for mod in modelos_candidatos:
-                    for intento in range(2):  # Reintento rápido si el servidor responde 503
+                    for intento in range(3):
                         try:
                             response = client.models.generate_content(
                                 model=mod,
@@ -250,7 +249,7 @@ with tab1:
                         except Exception as e:
                             ultimo_error = str(e)
                             if "503" in ultimo_error or "UNAVAILABLE" in ultimo_error:
-                                time.sleep(1)  # Pequeña pausa antes de reintentar o saltar de modelo
+                                time.sleep(2 ** intento)
                                 continue
                             break
                     if informe:
@@ -289,7 +288,7 @@ with tab1:
                         type="secondary"
                     )
                 else:
-                    st.error(f"El servicio de la API está saturado momentáneamente. Por favor, reintenta en unos segundos. Detalle: {ultimo_error}")
+                    st.error(f"Error de ejecución persistente: {ultimo_error}")
 
 with tab2:
     st.header("Historial de Inspecciones Guardadas")
