@@ -64,6 +64,106 @@ Reglas estrictas de auditoría:
 Responde EXCLUSIVAMENTE en el formato JSON estructurado requerido.
 """
 
+def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: float, in_pia: float, r_tierra: float, sens_diff_ma: float, seccion_mm2: float, sec_rec: float) -> InformeAuditoria:
+    """Genera un informe técnico determinista en caso de indisponibilidad de la API."""
+    hallazgos = []
+    faltantes = []
+
+    # 1. Capacidad térmica del conductor
+    if ib <= iz:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Sección de Conductor (Capacidad Térmica)",
+            articulo_itc_aplicable="ITC-BT-19",
+            estado=EstadoCumplimiento.CUMPLE,
+            dato_provocador=f"Ib = {ib} A <= Iz = {iz} A",
+            requisito_normativo="La intensidad admisible (Iz) debe ser superior o igual a la intensidad de empleo (Ib).",
+            justificacion_tecnica="El conductor seleccionado soporta la corriente de diseño de la carga sin sufrir degradación térmica."
+        ))
+    else:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Sección de Conductor (Capacidad Térmica)",
+            articulo_itc_aplicable="ITC-BT-19",
+            estado=EstadoCumplimiento.NO_CUMPLE,
+            dato_provocador=f"Ib = {ib} A > Iz = {iz} A",
+            requisito_normativo="La corriente admisible del cable (Iz) debe ser estrictamente mayor o igual que la corriente de servicio (Ib).",
+            justificacion_tecnica=f"Riesgo grave de sobrecalentamiento y fusión del aislamiento. Se requiere aumentar la sección a mínimo {sec_rec} mm² Cu."
+        ))
+
+    # 2. Coordinación de protección contra sobrecargas (Ib <= In <= Iz)
+    if ib <= in_pia <= iz:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Coordinación de Magnetotérmico (Ib <= In <= Iz)",
+            articulo_itc_aplicable="ITC-BT-22 / ITC-BT-19",
+            estado=EstadoCumplimiento.CUMPLE,
+            dato_provocador=f"Ib ({ib} A) <= In ({in_pia} A) <= Iz ({iz} A)",
+            requisito_normativo="In debe ser mayor o igual a Ib para evitar disparos intempestivos y menor o igual a Iz para proteger el cable.",
+            justificacion_tecnica="El calibre nominal del PIA garantiza la protección frente a sobrecargas sin disparos en régimen normal."
+        ))
+    else:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Coordinación de Magnetotérmico (Ib <= In <= Iz)",
+            articulo_itc_aplicable="ITC-BT-22 / ITC-BT-19",
+            estado=EstadoCumplimiento.NO_CUMPLE,
+            dato_provocador=f"In = {in_pia} A fuera del rango Ib = {ib} A / Iz = {iz} A",
+            requisito_normativo="In debe cumplir estrictamente la condición de coordinación Ib <= In <= Iz.",
+            justificacion_tecnica="Si In > Iz el cable no está protegido contra sobrecargas. Si In < Ib la protección disparará durante el funcionamiento ordinario."
+        ))
+
+    # 3. Caída de tensión
+    if dv_pct <= limite_du:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Caída de Tensión (dU%)",
+            articulo_itc_aplicable="ITC-BT-19",
+            estado=EstadoCumplimiento.CUMPLE,
+            dato_provocador=f"dU = {dv_pct}% <= {limite_du}%",
+            requisito_normativo=f"La caída de tensión no debe superar el {limite_du}% para esta tipología de circuito.",
+            justificacion_tecnica="El voltaje en bornes del receptor se mantiene dentro de los márgenes admisibles de funcionamiento."
+        ))
+    else:
+        hallazgos.append(HallazgoNormativo(
+            elemento_afectado="Caída de Tensión (dU%)",
+            articulo_itc_aplicable="ITC-BT-19",
+            estado=EstadoCumplimiento.NO_CUMPLE,
+            dato_provocador=f"dU = {dv_pct}% > {limite_du}%",
+            requisito_normativo=f"La caída de tensión no debe superar el límite normativo fijado en el {limite_du}%.",
+            justificacion_tecnica=f"Exceso de caída de tensión. Puede causar fallos de arranque, caída de par motor o parpadeo. Redimensionar a {sec_rec} mm²."
+        ))
+
+    # 4. Protección contra contactos indirectos y Tierra (Esquema TT)
+    if r_tierra > 0:
+        v_contacto = r_tierra * (sens_diff_ma / 1000.0)
+        if v_contacto <= 50.0:
+            hallazgos.append(HallazgoNormativo(
+                elemento_afectado="Protección Diferencial y Tierra",
+                articulo_itc_aplicable="ITC-BT-18 / ITC-BT-24",
+                estado=EstadoCumplimiento.CUMPLE,
+                dato_provocador=f"Ra * IΔn = {r_tierra} Ω * {sens_diff_ma} mA = {round(v_contacto, 2)} V <= 50 V",
+                requisito_normativo="La tensión de defecto esperada no debe superar 50 V en locales secos.",
+                justificacion_tecnica="La combinación de la puesta a tierra y el interruptor diferencial asegura la desconexión rápida antes de alcanzar tensiones peligrosas."
+            ))
+        else:
+            hallazgos.append(HallazgoNormativo(
+                elemento_afectado="Protección Diferencial y Tierra",
+                articulo_itc_aplicable="ITC-BT-18 / ITC-BT-24",
+                estado=EstadoCumplimiento.NO_CUMPLE,
+                dato_provocador=f"Ra * IΔn = {round(v_contacto, 2)} V > 50 V",
+                requisito_normativo="Tensión de contacto máxima admisible en instalaciones generales = 50 V.",
+                justificacion_tecnica="Resistencia de tierra excesivamente alta para la sensibilidad seleccionada. Aumentar la sensibilidad del diferencial o mejorar la red de tierra."
+            ))
+    else:
+        faltantes.append("Resistencia de la toma de tierra (Ra en Ohmios) no especificada. No es posible validar la seguridad contra contactos indirectos (ITC-BT-18).")
+
+    resumen = "Auditoría ejecutada mediante motor determinista local. " + (
+        "La instalación cumple con los preceptos fundamentales del REBT." if all(h.estado == EstadoCumplimiento.CUMPLE for h in hallazgos)
+        else "Se han detectado incumplimientos normativos críticos que requieren corrección de diseño."
+    )
+
+    return InformeAuditoria(
+        resumen_ejecutivo=resumen,
+        hallazgos=hallazgos,
+        datos_faltantes_criticos=faltantes
+    )
+
 def generar_pdf(informe: InformeAuditoria, datos_entrada: str) -> bytes:
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -202,14 +302,13 @@ with tab1:
         iz_calc = obtener_iz_tabulada(seccion_mm2, metodo_inst)
         limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
 
-        # Mostrar métricas físicas deterministas siempre
         st.info(f"**Valores deterministas de línea:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
 
-        # Evaluar recomendación de recálculo directa por Python
+        sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
+            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, limite_pct=limite_du_norma
+        )
+
         if ib_calc > iz_calc or dv_pct > limite_du_norma:
-            sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
-                potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, limite_pct=limite_du_norma
-            )
             if sec_rec:
                 st.warning(
                     f"💡 **Recomendación Correctora Directa (Cálculo Determinista):**\n\n"
@@ -218,37 +317,34 @@ with tab1:
                     f"- Nueva Caída de Tensión ($\\Delta U$): **{dv_rec}%** (cumple límite de {limite_du_norma}%)"
                 )
 
-        if not api_key:
-            st.error("Introduce tu Gemini API Key en el menú lateral para ejecutar el análisis regulatorio con IA.")
-        else:
-            datos_consolidados = f"""
-            --- CÁLCULOS FÍSICOS DETERMINISTAS EJECUTADOS POR EL MOTOR EN PYTHON ---
-            * Intensidad de empleo calculada (Ib): {ib_calc} A
-            * Caída de tensión calculada (dU): {dv_v} V ({dv_pct} %)
-            * Intensidad admisible tabulada del conductor (Iz a 40°C): {iz_calc} A
+        datos_consolidados = f"""
+        --- CÁLCULOS FÍSICOS DETERMINISTAS EJECUTADOS POR EL MOTOR EN PYTHON ---
+        * Intensidad de empleo calculada (Ib): {ib_calc} A
+        * Caída de tensión calculada (dU): {dv_v} V ({dv_pct} %)
+        * Intensidad admisible tabulada del conductor (Iz a 40°C): {iz_calc} A
 
-            --- DATOS DE ENTRADA DE LA INSTALACIÓN ---
-            - Nombre: {nombre_inst}
-            - Entorno: {entorno}, Temp ambiente: {temp_ambiente}°C
-            - Red: {tension}, Esquema: {esquema_tierra}, Ra tierra: {r_tierra if r_tierra > 0 else 'NO ESPECIFICADO'}
-            - Receptor: {tipo_receptor}, Potencia: {potencia_kw} kW, cos φ: {cos_phi}, rendimiento: {rendimiento}
-            - Arranque: {tipo_arranque}
-            - Línea: Longitud: {longitud_m} m, Sección: {seccion_mm2} mm² Cu, PE: {seccion_pe if seccion_pe > 0 else 'NO ESPECIFICADO'}
-            - Cable/Canalización: Aislamiento {aislamiento}, Método {metodo_inst}
-            - Magnetotérmico: In={in_pia}A, Curva {curva_pia}
-            - Diferencial: In={in_diff}A, Sensibilidad={sens_diff_ma} mA
-            - Observaciones: {observaciones}
-            """
-            
+        --- DATOS DE ENTRADA DE LA INSTALACIÓN ---
+        - Nombre: {nombre_inst}
+        - Entorno: {entorno}, Temp ambiente: {temp_ambiente}°C
+        - Red: {tension}, Esquema: {esquema_tierra}, Ra tierra: {r_tierra if r_tierra > 0 else 'NO ESPECIFICADO'}
+        - Receptor: {tipo_receptor}, Potencia: {potencia_kw} kW, cos φ: {cos_phi}, rendimiento: {rendimiento}
+        - Arranque: {tipo_arranque}
+        - Línea: Longitud: {longitud_m} m, Sección: {seccion_mm2} mm² Cu, PE: {seccion_pe if seccion_pe > 0 else 'NO ESPECIFICADO'}
+        - Cable/Canalización: Aislamiento {aislamiento}, Método {metodo_inst}
+        - Magnetotérmico: In={in_pia}A, Curva {curva_pia}
+        - Diferencial: In={in_diff}A, Sensibilidad={sens_diff_ma} mA
+        - Observaciones: {observaciones}
+        """
+
+        informe = None
+        raw_json = ""
+
+        # Intentar conectar con Gemini si se proporcionó una API Key
+        if api_key:
             with st.spinner("Procesando auditoría con IA..."):
                 client = genai.Client(api_key=api_key)
                 modelo_objetivo = "gemini-3.6-flash"
-                
-                informe = None
-                raw_json = ""
-                ultimo_error = ""
-
-                for intento in range(3):
+                for intento in range(2):
                     try:
                         response = client.models.generate_content(
                             model=modelo_objetivo,
@@ -263,48 +359,43 @@ with tab1:
                         raw_json = response.text
                         informe = InformeAuditoria.model_validate_json(raw_json)
                         break
-                    except Exception as e:
-                        ultimo_error = str(e)
-                        if "429" in ultimo_error:
-                            time.sleep(2)
-                            continue
-                        if "503" in ultimo_error or "UNAVAILABLE" in ultimo_error:
-                            time.sleep(2 ** intento)
-                            continue
-                        break
+                    except Exception:
+                        time.sleep(1)
+                        continue
 
-                if informe:
-                    st.success("Auditoría normatividad completada exitosamente.")
-                    
-                    auditoria_id = guardar_auditoria(nombre_inst, datos_consolidados, raw_json)
-                    st.toast(f"Guardado en base de datos con ID #{auditoria_id}")
+        # FALLBACK AUTOMÁTICO: Si no hay API Key o esta falló, generar informe determinista
+        if not informe:
+            st.info("ℹ️ **Modo de Auditoría Local Activo:** Generando informe regulatorio completo mediante reglas de ingeniería en Python.")
+            informe = generar_auditoria_local(ib_calc, iz_calc, dv_pct, limite_du_norma, in_pia, r_tierra, sens_diff_ma, seccion_mm2, sec_rec)
+            raw_json = informe.model_dump_json()
 
-                    st.subheader("Resumen Ejecutivo")
-                    st.info(informe.resumen_ejecutivo)
-                    
-                    if informe.datos_faltantes_criticos:
-                        st.subheader("⚠️ Datos Faltantes Críticos")
-                        for dato in informe.datos_faltantes_criticos:
-                            st.warning(f"- {dato}")
-                    
-                    st.subheader("Matriz de Hallazgos Normativos")
-                    for h in informe.hallazgos:
-                        with st.expander(f"{h.estado.value} | {h.elemento_afectado}"):
-                            st.write(f"**Artículo/ITC:** {h.articulo_itc_aplicable}")
-                            st.write(f"**Dato provocador:** {h.dato_provocador}")
-                            st.write(f"**Exigencia:** {h.requisito_normativo}")
-                            st.write(f"**Análisis técnico:** {h.justificacion_tecnica}")
+        auditoria_id = guardar_auditoria(nombre_inst, datos_consolidados, raw_json)
+        st.toast(f"Guardado en base de datos con ID #{auditoria_id}")
 
-                    pdf_bytes = generar_pdf(informe, datos_consolidados)
-                    st.download_button(
-                        label="📄 Descargar Informe Oficial en PDF",
-                        data=pdf_bytes,
-                        file_name=f"Informe_Auditoria_REBT_{auditoria_id}.pdf",
-                        mime="application/pdf",
-                        type="secondary"
-                    )
-                else:
-                    st.error(f"⚠️ **Atención:** La API de Google devolvió un error de cuota/conexión ({ultimo_error[:100]}...). Se muestran arriba las recomendaciones matemáticas locales.")
+        st.subheader("Resumen Ejecutivo")
+        st.info(informe.resumen_ejecutivo)
+        
+        if informe.datos_faltantes_criticos:
+            st.subheader("⚠️ Datos Faltantes Críticos")
+            for dato in informe.datos_faltantes_criticos:
+                st.warning(f"- {dato}")
+        
+        st.subheader("Matriz de Hallazgos Normativos")
+        for h in informe.hallazgos:
+            with st.expander(f"{h.estado.value} | {h.elemento_afectado}"):
+                st.write(f"**Artículo/ITC:** {h.articulo_itc_aplicable}")
+                st.write(f"**Dato provocador:** {h.dato_provocador}")
+                st.write(f"**Exigencia:** {h.requisito_normativo}")
+                st.write(f"**Análisis técnico:** {h.justificacion_tecnica}")
+
+        pdf_bytes = generar_pdf(informe, datos_consolidados)
+        st.download_button(
+            label="📄 Descargar Informe Oficial en PDF",
+            data=pdf_bytes,
+            file_name=f"Informe_Auditoria_REBT_{auditoria_id}.pdf",
+            mime="application/pdf",
+            type="primary"
+        )
 
 with tab2:
     st.header("Historial de Inspecciones Guardadas")
