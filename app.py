@@ -15,12 +15,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from calculos import (
     calcular_intensidad_empleo, 
     calcular_caida_tension, 
-    obtener_iz_tabulada,
+    calcular_iz_corregida,
     recomendar_seccion_correctora
 )
 from database import init_db, guardar_auditoria, obtener_historial, obtener_auditoria_por_id
 
-# Inicializar Base de Datos al arrancar
 init_db()
 
 st.set_page_config(
@@ -52,7 +51,7 @@ Eres un Ingeniero Inspector Industrial de Alta Calificación, especialista en el
 
 Tu objetivo es auditar los datos de la instalación eléctrica proporcionados y generar un informe técnico estructurado e inflexible respecto al cumplimiento normativo.
 
-IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados (Intensidad de empleo Ib, Caída de tensión dU%, e Intensidad Admisible Iz). UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
+IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados con factores de corrección por temperatura y agrupamiento. UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
 
 Reglas estrictas de auditoría:
 1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica estrictamente la condición de protección frente a sobrecargas: Ib <= In <= Iz.
@@ -65,31 +64,28 @@ Responde EXCLUSIVAMENTE en el formato JSON estructurado requerido.
 """
 
 def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: float, in_pia: float, r_tierra: float, sens_diff_ma: float, seccion_mm2: float, sec_rec: float) -> InformeAuditoria:
-    """Genera un informe técnico determinista en caso de indisponibilidad de la API."""
     hallazgos = []
     faltantes = []
 
-    # 1. Capacidad térmica del conductor
     if ib <= iz:
         hallazgos.append(HallazgoNormativo(
-            elemento_afectado="Sección de Conductor (Capacidad Térmica)",
+            elemento_afectado="Sección de Conductor (Capacidad Térmica Corregida)",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.CUMPLE,
-            dato_provocador=f"Ib = {ib} A <= Iz = {iz} A",
-            requisito_normativo="La intensidad admisible (Iz) debe ser superior o igual a la intensidad de empleo (Ib).",
-            justificacion_tecnica="El conductor seleccionado soporta la corriente de diseño de la carga sin sufrir degradación térmica."
+            dato_provocador=f"Ib = {ib} A <= Iz corregida = {iz} A",
+            requisito_normativo="La intensidad admisible corregida (Iz) debe ser superior o igual a la intensidad de empleo (Ib).",
+            justificacion_tecnica="El conductor soportará la carga aplicando coeficientes de agrupamiento y temperatura sin degradarse."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
-            elemento_afectado="Sección de Conductor (Capacidad Térmica)",
+            elemento_afectado="Sección de Conductor (Capacidad Térmica Corregida)",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.NO_CUMPLE,
-            dato_provocador=f"Ib = {ib} A > Iz = {iz} A",
-            requisito_normativo="La corriente admisible del cable (Iz) debe ser estrictamente mayor o igual que la corriente de servicio (Ib).",
-            justificacion_tecnica=f"Riesgo grave de sobrecalentamiento y fusión del aislamiento. Se requiere aumentar la sección a mínimo {sec_rec} mm² Cu."
+            dato_provocador=f"Ib = {ib} A > Iz corregida = {iz} A",
+            requisito_normativo="La corriente admisible corregida del cable (Iz) debe ser estrictamente mayor o igual que la corriente de servicio (Ib).",
+            justificacion_tecnica=f"Sobrecarga térmica por coeficientes de corrección. Se requiere aumentar la sección a mínimo {sec_rec} mm² Cu."
         ))
 
-    # 2. Coordinación de protección contra sobrecargas (Ib <= In <= Iz)
     if ib <= in_pia <= iz:
         hallazgos.append(HallazgoNormativo(
             elemento_afectado="Coordinación de Magnetotérmico (Ib <= In <= Iz)",
@@ -109,7 +105,6 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             justificacion_tecnica="Si In > Iz el cable no está protegido contra sobrecargas. Si In < Ib la protección disparará durante el funcionamiento ordinario."
         ))
 
-    # 3. Caída de tensión
     if dv_pct <= limite_du:
         hallazgos.append(HallazgoNormativo(
             elemento_afectado="Caída de Tensión (dU%)",
@@ -126,10 +121,9 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             estado=EstadoCumplimiento.NO_CUMPLE,
             dato_provocador=f"dU = {dv_pct}% > {limite_du}%",
             requisito_normativo=f"La caída de tensión no debe superar el límite normativo fijado en el {limite_du}%.",
-            justificacion_tecnica=f"Exceso de caída de tensión. Puede causar fallos de arranque, caída de par motor o parpadeo. Redimensionar a {sec_rec} mm²."
+            justificacion_tecnica=f"Exceso de caída de tensión. Redimensionar a {sec_rec} mm²."
         ))
 
-    # 4. Protección contra contactos indirectos y Tierra (Esquema TT)
     if r_tierra > 0:
         v_contacto = r_tierra * (sens_diff_ma / 1000.0)
         if v_contacto <= 50.0:
@@ -139,7 +133,7 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
                 estado=EstadoCumplimiento.CUMPLE,
                 dato_provocador=f"Ra * IΔn = {r_tierra} Ω * {sens_diff_ma} mA = {round(v_contacto, 2)} V <= 50 V",
                 requisito_normativo="La tensión de defecto esperada no debe superar 50 V en locales secos.",
-                justificacion_tecnica="La combinación de la puesta a tierra y el interruptor diferencial asegura la desconexión rápida antes de alcanzar tensiones peligrosas."
+                justificacion_tecnica="La protección diferencial asegura la desconexión antes de alcanzar tensiones peligrosas."
             ))
         else:
             hallazgos.append(HallazgoNormativo(
@@ -148,10 +142,10 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
                 estado=EstadoCumplimiento.NO_CUMPLE,
                 dato_provocador=f"Ra * IΔn = {round(v_contacto, 2)} V > 50 V",
                 requisito_normativo="Tensión de contacto máxima admisible en instalaciones generales = 50 V.",
-                justificacion_tecnica="Resistencia de tierra excesivamente alta para la sensibilidad seleccionada. Aumentar la sensibilidad del diferencial o mejorar la red de tierra."
+                justificacion_tecnica="Resistencia de tierra excesivamente alta para la sensibilidad seleccionada."
             ))
     else:
-        faltantes.append("Resistencia de la toma de tierra (Ra en Ohmios) no especificada. No es posible validar la seguridad contra contactos indirectos (ITC-BT-18).")
+        faltantes.append("Resistencia de la toma de tierra (Ra) no especificada. Imposible validar contactos indirectos (ITC-BT-18).")
 
     resumen = "Auditoría ejecutada mediante motor determinista local. " + (
         "La instalación cumple con los preceptos fundamentales del REBT." if all(h.estado == EstadoCumplimiento.CUMPLE for h in hallazgos)
@@ -167,28 +161,15 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
 def generar_pdf(informe: InformeAuditoria, datos_entrada: str) -> bytes:
     buffer = BytesIO()
     doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=36,
-        leftMargin=36,
-        topMargin=36,
-        bottomMargin=36
+        buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
     )
     story = []
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle(
-        'DocTitle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=colors.HexColor("#1E3A8A"), spaceAfter=12
-    )
-    h2_style = ParagraphStyle(
-        'SectionHeader', parent=styles['Heading2'], fontSize=13, leading=16, textColor=colors.HexColor("#1E3A8A"), spaceBefore=10, spaceAfter=6
-    )
-    body_style = ParagraphStyle(
-        'BodyDark', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor("#111827")
-    )
-    header_cell_style = ParagraphStyle(
-        'HeaderCell', parent=styles['Normal'], fontSize=9, leading=11, textColor=colors.white, fontName="Helvetica-Bold"
-    )
+    title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=colors.HexColor("#1E3A8A"), spaceAfter=12)
+    h2_style = ParagraphStyle('SectionHeader', parent=styles['Heading2'], fontSize=13, leading=16, textColor=colors.HexColor("#1E3A8A"), spaceBefore=10, spaceAfter=6)
+    body_style = ParagraphStyle('BodyDark', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor("#111827"))
+    header_cell_style = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=9, leading=11, textColor=colors.white, fontName="Helvetica-Bold")
 
     story.append(Paragraph("Informe Técnico de Auditoría REBT", title_style))
     story.append(Paragraph("<b>Entorno de Inspección:</b> Evaluación de Conformidad Normativa", body_style))
@@ -257,7 +238,7 @@ with tab1:
     with col1:
         st.subheader("1. Entorno y Red")
         entorno = st.selectbox("Local de concurrencia / Emplazamiento", ["General / Habitual", "Pública concurrencia (ITC-BT-28)", "Local húmedo / mojado (ITC-BT-30)", "Local con riesgo de incendio/explosión (ITC-BT-29)", "Obra de construcción (ITC-BT-33)"])
-        temp_ambiente = st.number_input("Temperatura ambiente (°C)", value=40, step=5)
+        temp_ambiente = st.select_slider("Temperatura ambiente (°C)", options=[25, 30, 35, 40, 45, 50, 55, 60], value=40)
         tension = st.selectbox("Tensión de red", ["400V Trifásico", "230V Monofásico"])
         esquema_tierra = st.selectbox("Esquema de distribución / Tierra", ["TT", "TN-S", "TN-C", "IT"])
         r_tierra = st.number_input("Resistencia de tierra Ra (Ω) [0 si no se conoce]", value=15.0, step=1.0)
@@ -280,6 +261,7 @@ with tab1:
     with col4:
         aislamiento = st.selectbox("Tipo de aislamiento", ["XLPE / EPR (90 °C)", "PVC (70 °C)"])
         metodo_inst = st.selectbox("Método de instalación (UNE 20460)", ["B1 (Tubo en pared de obra)", "B2 (Tubo sobre pared / canal)", "C (Bandeja no perforada / aire)", "E (Bandeja perforada)", "D (Enterrado bajo tubo)"])
+        num_circuitos = st.number_input("Número de circuitos agrupados en canalización", value=1, min_value=1, max_value=9)
 
     st.subheader("4. Protecciones en CGMP")
     col5, col6 = st.columns(2)
@@ -296,32 +278,31 @@ with tab1:
     btn_evaluar = st.button("🚀 Ejecutar Auditoría Estructurada", type="primary")
 
     if btn_evaluar:
-        # 1. Cálculos Físicos Deterministas (Locales)
         ib_calc = calcular_intensidad_empleo(potencia_kw, tension, cos_phi, rendimiento)
         dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi)
-        iz_calc = obtener_iz_tabulada(seccion_mm2, metodo_inst)
+        iz_calc = calcular_iz_corregida(seccion_mm2, metodo_inst, temp_ambiente, aislamiento, num_circuitos)
         limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
 
-        st.info(f"**Valores deterministas de línea:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
+        st.info(f"**Valores deterministas corregidos:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z (corregida) = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
 
         sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
-            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, limite_pct=limite_du_norma
+            potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, temp_ambiente, aislamiento, num_circuitos, limite_pct=limite_du_norma
         )
 
         if ib_calc > iz_calc or dv_pct > limite_du_norma:
             if sec_rec:
                 st.warning(
                     f"💡 **Recomendación Correctora Directa (Cálculo Determinista):**\n\n"
-                    f"La sección introducida ({seccion_mm2} mm²) no es apta. Aumenta la sección del conductor a **{sec_rec} mm² Cu**.\n"
-                    f"- Nueva Intensidad Admisible ($I_z$): **{iz_rec} A** (suficiente para $I_b = {ib_calc} A$)\n"
+                    f"La sección introducida ({seccion_mm2} mm²) no es apta bajo los factores de corrección. Aumenta la sección del conductor a **{sec_rec} mm² Cu**.\n"
+                    f"- Nueva Intensidad Admisible Corregida ($I_z$): **{iz_rec} A** (suficiente para $I_b = {ib_calc} A$)\n"
                     f"- Nueva Caída de Tensión ($\\Delta U$): **{dv_rec}%** (cumple límite de {limite_du_norma}%)"
                 )
 
         datos_consolidados = f"""
-        --- CÁLCULOS FÍSICOS DETERMINISTAS EJECUTADOS POR EL MOTOR EN PYTHON ---
+        --- CÁLCULOS FÍSICOS DETERMINISTAS (CON FACTORES DE CORRECCIÓN) ---
         * Intensidad de empleo calculada (Ib): {ib_calc} A
         * Caída de tensión calculada (dU): {dv_v} V ({dv_pct} %)
-        * Intensidad admisible tabulada del conductor (Iz a 40°C): {iz_calc} A
+        * Intensidad admisible corregida del conductor (Iz con f1={temp_ambiente}°C y f2={num_circuitos} circ): {iz_calc} A
 
         --- DATOS DE ENTRADA DE LA INSTALACIÓN ---
         - Nombre: {nombre_inst}
@@ -330,7 +311,7 @@ with tab1:
         - Receptor: {tipo_receptor}, Potencia: {potencia_kw} kW, cos φ: {cos_phi}, rendimiento: {rendimiento}
         - Arranque: {tipo_arranque}
         - Línea: Longitud: {longitud_m} m, Sección: {seccion_mm2} mm² Cu, PE: {seccion_pe if seccion_pe > 0 else 'NO ESPECIFICADO'}
-        - Cable/Canalización: Aislamiento {aislamiento}, Método {metodo_inst}
+        - Cable/Canalización: Aislamiento {aislamiento}, Método {metodo_inst}, Agrupamiento: {num_circuitos} circuitos
         - Magnetotérmico: In={in_pia}A, Curva {curva_pia}
         - Diferencial: In={in_diff}A, Sensibilidad={sens_diff_ma} mA
         - Observaciones: {observaciones}
@@ -339,7 +320,6 @@ with tab1:
         informe = None
         raw_json = ""
 
-        # Intentar conectar con Gemini si se proporcionó una API Key
         if api_key:
             with st.spinner("Procesando auditoría con IA..."):
                 client = genai.Client(api_key=api_key)
@@ -363,7 +343,6 @@ with tab1:
                         time.sleep(1)
                         continue
 
-        # FALLBACK AUTOMÁTICO: Si no hay API Key o esta falló, generar informe determinista
         if not informe:
             st.info("ℹ️ **Modo de Auditoría Local Activo:** Generando informe regulatorio completo mediante reglas de ingeniería en Python.")
             informe = generar_auditoria_local(ib_calc, iz_calc, dv_pct, limite_du_norma, in_pia, r_tierra, sens_diff_ma, seccion_mm2, sec_rec)
