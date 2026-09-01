@@ -218,10 +218,10 @@ with tab1:
             with st.spinner("Procesando auditoría..."):
                 client = genai.Client(api_key=api_key)
                 
-                # Prioriza el modelo principal de alto rendimiento y usa respaldo si falla
+                # Modelos oficiales compatibles y vigentes
                 modelos_candidatos = [
                     "gemini-2.5-flash",
-                    "gemini-1.5-flash"
+                    "gemini-2.5-pro"
                 ]
                 
                 informe = None
@@ -288,7 +288,7 @@ with tab1:
                         type="secondary"
                     )
                 else:
-                    st.error(f"Error de ejecución persistente: {ultimo_error}")
+                    st.error(f"Error de ejecución: {ultimo_error}")
 
 with tab2:
     st.header("Historial de Inspecciones Guardadas")
