@@ -42,9 +42,9 @@ Eres un Ingeniero Inspector Industrial de Alta Calificación, especialista en el
 
 Tu objetivo es auditar los datos de la instalación eléctrica proporcionados y generar un informe técnico estructurado e inflexible respecto al cumplimiento normativo.
 
-Reglas estricta de auditoría:
+Reglas estrictas de auditoría:
 1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Debes verificar siempre Ib <= In <= Iz.
-2. Cálculo de Intesidades Admisibles (Iz): Ajusta la intensidad admisible del conductor según el Método de Instalación (UNE 20460 / IEC 60364-5-52) y la temperatura ambiente dada.
+2. Cálculo de Intensidades Admisibles (Iz): Ajusta la intensidad admisible del conductor según el Método de Instalación (UNE 20460 / IEC 60364-5-52) y la temperatura ambiente dada.
 3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En esquema TT, verifica Ra * IΔn <= 50V (o 24V en locales húmedos/obras).
 4. Sección del Conductor Neutro y Protección (ITC-BT-19): Verifica si la sección del neutro cumple con los mínimos requeridos según la sección de los conductores de fase.
 5. Inflexibilidad Técnica: Si un dato no permite comprobar el cumplimiento (ej: falta longitud para caída de tensión, o no se da la Ra de tierra), debes marcarlo como REQUIERE ACLARACIÓN y añadirlo a 'datos_faltantes_criticos'.
@@ -199,35 +199,30 @@ if btn_evaluar:
         
         with st.spinner("Analizando normas UNE y articulado del REBT..."):
             client = genai.Client(api_key=api_key)
-            # Lista de fallback: intenta gemini-2.5-flash y si falla pasa a gemini-1.5-flash
-            modelos_disponibles = ['gemini-2.5-flash', 'gemini-1.5-flash']
+            modelo_activo = 'gemini-3.6-flash'
             respuesta_correcta = False
             informe = None
             
-            for modelo in modelos_disponibles:
-                if respuesta_correcta:
+            for intento in range(4):
+                try:
+                    response = client.models.generate_content(
+                        model=modelo_activo,
+                        contents=f"Audita la siguiente instalación:\n{datos_consolidados}",
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            response_mime_type="application/json",
+                            response_schema=InformeAuditoria,
+                            temperature=0.1,
+                        ),
+                    )
+                    informe = InformeAuditoria.model_validate_json(response.text)
+                    respuesta_correcta = True
                     break
-                for intento in range(3):
-                    try:
-                        response = client.models.generate_content(
-                            model=modelo,
-                            contents=f"Audita la siguiente instalación:\n{datos_consolidados}",
-                            config=types.GenerateContentConfig(
-                                system_instruction=SYSTEM_INSTRUCTION,
-                                response_mime_type="application/json",
-                                response_schema=InformeAuditoria,
-                                temperature=0.1,
-                            ),
-                        )
-                        informe = InformeAuditoria.model_validate_json(response.text)
-                        respuesta_correcta = True
-                        break
-                    except Exception as e:
-                        if "503" in str(e) or "UNAVAILABLE" in str(e):
-                            time.sleep(2 * (intento + 1))  # Espera exponencial: 2s, 4s...
-                        else:
-                            st.error(f"Error de validación o parámetro: {str(e)}")
-                            break
+                except Exception as e:
+                    if intento < 3:
+                        time.sleep(3 * (intento + 1))
+                    else:
+                        st.error(f"Error al conectar con la API tras varios reintentos: {str(e)}")
             
             if respuesta_correcta and informe:
                 st.success("Auditoría completada exitosamente.")
@@ -256,5 +251,3 @@ if btn_evaluar:
                     mime="application/pdf",
                     type="secondary"
                 )
-            else:
-                st.error("Servidores de IA temporalmente saturados tras múltiples reintentos. Vuelve a hacer clic en Ejecutar Auditoría en unos segundos.")
