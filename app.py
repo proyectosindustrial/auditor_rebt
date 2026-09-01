@@ -10,6 +10,9 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
+# Importación del nuevo motor determinista de cálculos
+from calculos import calcular_intensidad_empleo, calcular_caida_tension, obtener_iz_tabulada
+
 # --- CONFIGURACIÓN DE PÁGINA STREAMLIT ---
 st.set_page_config(
     page_title="Auditor Técnico REBT",
@@ -42,12 +45,14 @@ Eres un Ingeniero Inspector Industrial de Alta Calificación, especialista en el
 
 Tu objetivo es auditar los datos de la instalación eléctrica proporcionados y generar un informe técnico estructurado e inflexible respecto al cumplimiento normativo.
 
+IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados (Intensidad de empleo Ib, Caída de tensión dU%, e Intensidad Admisible Iz). UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
+
 Reglas estrictas de auditoría:
-1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Debes verificar siempre Ib <= In <= Iz.
-2. Cálculo de Intensidades Admisibles (Iz): Ajusta la intensidad admisible del conductor según el Método de Instalación (UNE 20460 / IEC 60364-5-52) y la temperatura ambiente dada.
+1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Verifica estrictamente la condición de protección frente a sobrecargas: Ib <= In <= Iz.
+2. Caída de Tensión (ITC-BT-19): Verifica que dU% no supere los límites normativos (4% para distribución interior general, 3% para alumbrado, 5% para otros usos/fuerza salvo especificación).
 3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En esquema TT, verifica Ra * IΔn <= 50V (o 24V en locales húmedos/obras).
 4. Sección del Conductor Neutro y Protección (ITC-BT-19): Verifica si la sección del neutro cumple con los mínimos requeridos según la sección de los conductores de fase.
-5. Inflexibilidad Técnica: Si un dato no permite comprobar el cumplimiento (ej: falta longitud para caída de tensión, o no se da la Ra de tierra), debes marcarlo como REQUIERE ACLARACIÓN y añadirlo a 'datos_faltantes_criticos'.
+5. Inflexibilidad Técnica: Si un dato imprescindible falta (ej: no se da la Ra de tierra), márcalo como REQUIERE ACLARACIÓN y añádelo a 'datos_faltantes_criticos'.
 
 Responde EXCLUSIVAMENTE en el formato JSON estructurado requerido.
 """
@@ -185,7 +190,18 @@ if btn_evaluar:
     if not api_key:
         st.error("Introduce tu Gemini API Key en el menú lateral.")
     else:
+        # CÁLCULOS DETERMINISTAS EN PYTHON PREVIOS A GEMINI
+        ib_calc = calcular_intensidad_empleo(potencia_kw, tension, cos_phi, rendimiento)
+        dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi)
+        iz_calc = obtener_iz_tabulada(seccion_mm2, metodo_inst)
+
         datos_consolidados = f"""
+        --- CÁLCULOS FÍSICOS DETERMINISTAS EJECUTADOS POR EL MOTOR EN PYTHON ---
+        * Intensidad de empleo calculada (Ib): {ib_calc} A
+        * Caída de tensión calculada (dU): {dv_v} V ({dv_pct} %)
+        * Intensidad admisible tabulada del conductor (Iz a 40°C): {iz_calc} A
+
+        --- DATOS DE ENTRADA DE LA INSTALACIÓN ---
         - Entorno: {entorno}, Temp ambiente: {temp_ambiente}°C
         - Red: {tension}, Esquema: {esquema_tierra}, Ra tierra: {r_tierra if r_tierra > 0 else 'NO ESPECIFICADO'}
         - Receptor: {tipo_receptor}, Potencia: {potencia_kw} kW, cos φ: {cos_phi}, rendimiento: {rendimiento}
@@ -226,6 +242,10 @@ if btn_evaluar:
             
             if respuesta_correcta and informe:
                 st.success("Auditoría completada exitosamente.")
+                
+                # Muestra rápida de valores calculados internamente
+                st.info(f"**Valores deterministas de línea:** $I_b = {ib_calc}\\text{{ A}}$ | $I_z = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
+
                 st.subheader("Resumen Ejecutivo")
                 st.info(informe.resumen_ejecutivo)
                 
