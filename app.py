@@ -52,11 +52,11 @@ Eres un Ingeniero Inspector Industrial de Alta Calificación, especialista en el
 
 Tu objetivo es auditar los datos proporcionados y generar un informe técnico estructurado e inflexible.
 
-IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados con factores de corrección por temperatura, agrupamiento y material. UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
+IMPORTANTE: Se te proporcionan cálculos deterministas ya ejecutados con factores de corrección por temperatura, agrupamiento y resistencia dependiente de la temperatura de servicio. UTILIZA ESTOS VALORES CALCULADOS PARA TU EVALUACIÓN.
 
-Reglas estrictas de auditoría:
+Reglas strictly normativas de auditoría:
 1. Coordinación de Protecciones (ITC-BT-19 / ITC-BT-22): Ib <= In <= Iz.
-2. Caída de Tensión (ITC-BT-19): Verificar límites (3% alumbrado, 5% otros).
+2. Caída de Tensión (ITC-BT-19): Verificar límites (3% alumbrado, 5% otros) con la caída real en temperatura de servicio.
 3. Protección Diferencial y Puesta a Tierra (ITC-BT-18 / ITC-BT-24): En TT, Ra * IΔn <= 50V (o 24V locales húmedos/obras).
 4. Sección del Conductor PE y Neutro (ITC-BT-18 / ITC-BT-19): Verificar Spe >= Sfase si Sfase <= 16mm² y Spe >= Sfase/2 si Sfase > 16mm².
 5. Inflexibilidad Técnica: Si falta un dato crítico, marcar REQUIERE ACLARACIÓN.
@@ -76,7 +76,7 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             estado=EstadoCumplimiento.CUMPLE,
             dato_provocador=f"Ib = {ib} A <= Iz corregida = {iz} A",
             requisito_normativo="La intensidad admisible corregida (Iz) debe ser superior o igual a la intensidad de empleo (Ib).",
-            justificacion_tecnica="El conductor seleccionado soportará la carga aplicando coeficientes de agrupamiento, temperatura y material."
+            justificacion_tecnica="El conductor seleccionado soportará la carga aplicando coeficientes de agrupamiento, temperatura ambiente y de servicio."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
@@ -85,7 +85,7 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             estado=EstadoCumplimiento.NO_CUMPLE,
             dato_provocador=f"Ib = {ib} A > Iz corregida = {iz} A",
             requisito_normativo="La corriente admisible corregida del cable (Iz) debe ser mayor o igual que la corriente de servicio (Ib).",
-            justificacion_tecnica=f"Riesgo térmico grave. Aumentar sección a mínimo {sec_rec} mm²."
+            justificacion_tecnica=f"Riesgo térmico grave por sobrecarga. Aumentar sección a mínimo {sec_rec} mm²."
         ))
 
     # 2. Coordinación de protección frente a sobrecargas
@@ -96,7 +96,7 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             estado=EstadoCumplimiento.CUMPLE,
             dato_provocador=f"Ib ({ib} A) <= In ({in_pia} A) <= Iz ({iz} A)",
             requisito_normativo="In debe cumplir estrictamente Ib <= In <= Iz.",
-            justificacion_tecnica="El calibre nominal del PIA garantiza la protección sin disparos intempestivos."
+            justificacion_tecnica="El calibre nominal del PIA garantiza la protección del cable sin disparos intempestivos."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
@@ -114,18 +114,18 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
             elemento_afectado="Caída de Tensión (dU%)",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.CUMPLE,
-            dato_provocador=f"dU = {dv_pct}% <= {limite_du}%",
+            dato_provocador=f"dU = {dv_pct}% <= {limite_du}% (a T_servicio)",
             requisito_normativo=f"La caída de tensión no debe superar el {limite_du}%.",
-            justificacion_tecnica="El voltaje en el receptor se mantiene dentro de los márgenes admisibles."
+            justificacion_tecnica="El voltaje en el receptor se mantiene dentro de los márgenes admisibles en régimen de trabajo permanente."
         ))
     else:
         hallazgos.append(HallazgoNormativo(
             elemento_afectado="Caída de Tensión (dU%)",
             articulo_itc_aplicable="ITC-BT-19",
             estado=EstadoCumplimiento.NO_CUMPLE,
-            dato_provocador=f"dU = {dv_pct}% > {limite_du}%",
+            dato_provocador=f"dU = {dv_pct}% > {limite_du}% (a T_servicio)",
             requisito_normativo=f"La caída de tensión no debe superar el {limite_du}%.",
-            justificacion_tecnica=f"Exceso de caída de tensión. Redimensionar a mínimo {sec_rec} mm²."
+            justificacion_tecnica=f"Exceso de caída de tensión considerando el aumento de resistencia por temperatura de servicio. Redimensionar a mínimo {sec_rec} mm²."
         ))
 
     # 4. Dimensionamiento de PE y Neutro
@@ -173,7 +173,7 @@ def generar_auditoria_local(ib: float, iz: float, dv_pct: float, limite_du: floa
     else:
         faltantes.append("Resistencia de la toma de tierra (Ra) no especificada. Imposible validar contactos indirectos (ITC-BT-18).")
 
-    resumen = "Auditoría ejecutada mediante motor determinista local. " + (
+    resumen = "Auditoría ejecutada mediante motor determinista local con corrección térmica de resistencia. " + (
         "La instalación cumple con los preceptos fundamentales del REBT." if all(h.estado == EstadoCumplimiento.CUMPLE for h in hallazgos)
         else "Se han detectado incumplimientos normativos críticos que requieren corrección de diseño."
     )
@@ -307,11 +307,16 @@ with tab1:
 
     if btn_evaluar:
         ib_calc = calcular_intensidad_empleo(potencia_kw, tension, cos_phi, rendimiento)
-        dv_v, dv_pct = calcular_caida_tension(potencia_kw, longitud_m, seccion_mm2, tension, cos_phi, material_conductor)
+        
+        # Caída de tensión real considerando temperatura de servicio del conductor
+        dv_v, dv_pct = calcular_caida_tension(
+            potencia_kw, longitud_m, seccion_mm2, tension, cos_phi, material_conductor, aislamiento
+        )
+        
         iz_calc = calcular_iz_corregida(seccion_mm2, metodo_inst, temp_ambiente, aislamiento, num_circuitos, material_conductor)
         limite_du_norma = 3.0 if "Alumbrado" in tipo_receptor else 5.0
 
-        st.info(f"**Valores deterministas corregidos ({material_conductor}):** $I_b = {ib_calc}\\text{{ A}}$ | $I_z (corregida) = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
+        st.info(f"**Valores deterministas corregidos ({material_conductor} @ T_serv):** $I_b = {ib_calc}\\text{{ A}}$ | $I_z (corregida) = {iz_calc}\\text{{ A}}$ | $\\Delta U = {dv_pct}\\%$")
 
         sec_rec, iz_rec, dv_rec = recomendar_seccion_correctora(
             potencia_kw, longitud_m, tension, cos_phi, rendimiento, metodo_inst, temp_ambiente, aislamiento, num_circuitos, material_conductor, limite_pct=limite_du_norma
@@ -327,10 +332,10 @@ with tab1:
                 )
 
         datos_consolidados = f"""
-        --- CÁLCULOS FÍSICOS DETERMINISTAS (CON FACTORES DE CORRECCIÓN) ---
+        --- CÁLCULOS FÍSICOS DETERMINISTAS (CON FACTORES DE CORRECCIÓN Y T_SERVICIO) ---
         * Material Conductor: {material_conductor}
         * Intensidad de empleo calculada (Ib): {ib_calc} A
-        * Caída de tensión calculada (dU): {dv_v} V ({dv_pct} %)
+        * Caída de tensión calculada a T_servicio (dU): {dv_v} V ({dv_pct} %)
         * Intensidad admisible corregida (Iz con f1={temp_ambiente}°C y f2={num_circuitos} circ): {iz_calc} A
 
         --- DATOS DE ENTRADA DE LA INSTALACIÓN ---
